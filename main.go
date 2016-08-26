@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 const (
 	PAGE_TOKEN = ""
+	AUTH_TOKEN = ""
 )
 
 func main() {
@@ -34,22 +38,22 @@ func MessengerVerify(w http.ResponseWriter, r *http.Request) {
 
 		input := new(MessengerInput)
 		if err := json.NewDecoder(r.Body).Decode(input); err == nil {
-			log.Println("got message:", input.Entry[0].Messaging[0].Message.Text)
 
 			//lets swap sender and recipient
 			reply := input.Entry[0].Messaging[0]
 			reply.Sender, reply.Recipient = reply.Recipient, reply.Sender
 
-			//reply with a very creative message
-			reply.Message.Text = "hoooo!"
-			reply.Message.Seq = 0 //these fields are not used so remove them with omit empty
-			reply.Message.Mid = ""
+			if resp, err := getApiAiResponse(*input); err == nil {
+				reply.Message.Text = resp
+				reply.Message.Seq = 0 //these fields are not used so remove them with omit empty
+				reply.Message.Mid = ""
 
-			b, _ := json.Marshal(reply)
-			url := fmt.Sprintf("https://graph.facebook.com/v2.6/me/messages?access_token=%s", PAGE_TOKEN)
-			http.Post(url,
-				"application/json",
-				bytes.NewReader(b))
+				b, _ := json.Marshal(reply)
+				url := fmt.Sprintf("https://graph.facebook.com/v2.6/me/messages?access_token=%s", PAGE_TOKEN)
+				http.Post(url,
+					"application/json",
+					bytes.NewReader(b))
+			}
 			return
 		}
 	}
@@ -76,5 +80,46 @@ type MessengerInput struct {
 				Text string `json:"text"`
 			} `json:"message,omitempty"`
 		} `json:"messaging"`
+	}
+}
+
+type ApiAiInput struct {
+	Status struct {
+		Code      int
+		ErrorType string
+	}
+	Result struct {
+		Action           *string
+		ActionIncomplete bool
+		Speech           string
+	} `json:"result"`
+}
+
+func getApiAiResponse(m MessengerInput) (resp string, err error) {
+	params := url.Values{}
+	params.Add("query", m.Entry[0].Messaging[0].Message.Text)
+	params.Set("sessionId", m.Entry[0].Messaging[0].Sender.Id)
+
+	url := fmt.Sprintf("https://api.api.ai/v1/query?V=20160518&lang=En&%s", params.Encode())
+	ai, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	ai.Header.Set("Authorization", "Bearer "+AUTH_TOKEN)
+
+	if resp, err := http.DefaultClient.Do(ai); err != nil {
+		return "", err
+	} else {
+		defer resp.Body.Close()
+
+		var input ApiAiInput
+		datastring, _ := ioutil.ReadAll(resp.Body)
+		err := json.NewDecoder(strings.NewReader(string(datastring))).Decode(&input)
+		if err != nil {
+			return "", err
+		}
+
+		return input.Result.Speech, nil
 	}
 }
